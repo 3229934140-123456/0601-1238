@@ -1,0 +1,26 @@
+{
+  "name": "creative-design-platform",
+  "version": "1.0.0",
+  "description": "创意设计平台后端服务 - 为印刷门店提供在线稿件接收和下单协作能力",
+  "main": "src/app.js",
+  "scripts": {
+    "start": "node src/app.js",
+    "dev": "node src/app.js",
+    "init-db": "node src/scripts/initDB.js"
+  },
+  "keywords": ["design", "printing", "platform", "backend"],
+  "author": "Creative Design Platform",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "sequelize": "^6.35.2",
+    "sqlite3": "^5.1.7",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "multer": "^1.4.5-lts.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "moment": "^2.30.1",
+    "uuid": "^9.0.1"
+  }
+}
