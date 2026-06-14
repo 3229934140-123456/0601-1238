@@ -6,6 +6,20 @@ const {
 const { success, error, paginate } = require('../utils/response');
 const { createNotification } = require('../utils/notification');
 
+function checkArtworkOwnership(req, artwork) {
+  if (req.userType === 'customer' && artwork.customerId !== req.customerId) {
+    return false;
+  }
+  return true;
+}
+
+function checkOrderOwnership(req, order) {
+  if (req.userType === 'customer' && order.customerId !== req.customerId) {
+    return false;
+  }
+  return true;
+}
+
 async function getReviewList(req, res, next) {
   try {
     const {
@@ -75,6 +89,10 @@ async function getReviewDetail(req, res, next) {
       return error(res, '稿件不存在', 404);
     }
 
+    if (!checkArtworkOwnership(req, artwork)) {
+      return error(res, '无权访问此稿件', 403);
+    }
+
     success(res, artwork);
   } catch (err) {
     next(err);
@@ -93,6 +111,10 @@ async function addReviewComment(req, res, next) {
     const artwork = await Artwork.findByPk(artworkId);
     if (!artwork) {
       return error(res, '稿件不存在', 404);
+    }
+
+    if (!checkArtworkOwnership(req, artwork)) {
+      return error(res, '无权操作此稿件', 403);
     }
 
     const comment = await ArtworkComment.create({
@@ -245,6 +267,10 @@ async function approveProof(req, res, next) {
       return error(res, '订单不存在', 404);
     }
 
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权操作此订单', 403);
+    }
+
     if (order.proofStatus !== 'pending_approval') {
       return error(res, '当前状态不允许确认打样', 400);
     }
@@ -280,6 +306,10 @@ async function rejectProof(req, res, next) {
       return error(res, '订单不存在', 404);
     }
 
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权操作此订单', 403);
+    }
+
     await order.update({
       proofStatus: 'rejected'
     });
@@ -304,6 +334,15 @@ async function getReviewComments(req, res, next) {
   try {
     const { artworkId } = req.params;
     const { commentType } = req.query;
+
+    const artwork = await Artwork.findByPk(artworkId);
+    if (!artwork) {
+      return error(res, '稿件不存在', 404);
+    }
+
+    if (!checkArtworkOwnership(req, artwork)) {
+      return error(res, '无权访问此稿件', 403);
+    }
 
     const where = { artworkId };
     if (commentType) {

@@ -7,10 +7,17 @@ const { success, error, paginate } = require('../utils/response');
 const { generateOrderNo, generatePaymentNo } = require('../utils/generator');
 const { notifyOrderStatus } = require('../utils/notification');
 
+function checkOrderOwnership(req, order) {
+  if (req.userType === 'customer' && order.customerId !== req.customerId) {
+    return false;
+  }
+  return true;
+}
+
 async function createOrder(req, res, next) {
   try {
     const {
-      customerId, quoteId, artworkId, title,
+      quoteId, artworkId, title,
       paperSpecId, paperSpecDetail, quantity = 1,
       size, processList, unitPrice, totalAmount,
       discount = 0, actualAmount, deliveryDate,
@@ -20,7 +27,14 @@ async function createOrder(req, res, next) {
       source = 'online'
     } = req.body;
 
-    if (!customerId) {
+    let finalCustomerId;
+    if (req.userType === 'customer') {
+      finalCustomerId = req.customerId;
+    } else {
+      finalCustomerId = req.body.customerId;
+    }
+
+    if (!finalCustomerId) {
       return error(res, '客户ID不能为空', 400);
     }
 
@@ -38,7 +52,7 @@ async function createOrder(req, res, next) {
 
     const order = await Order.create({
       orderNo,
-      customerId,
+      customerId: finalCustomerId,
       quoteId,
       artworkId,
       title,
@@ -77,7 +91,7 @@ async function createOrder(req, res, next) {
       operatorName: req.user?.realName || '客户'
     });
 
-    const customer = await Customer.findByPk(customerId);
+    const customer = await Customer.findByPk(finalCustomerId);
     if (customer) {
       customer.increment('totalOrders');
       customer.increment('totalAmount', { by: actualAmount || totalAmount || 0 });
@@ -105,7 +119,7 @@ async function getOrderList(req, res, next) {
 
     const where = {};
 
-    if (req.customerId) {
+    if (req.userType === 'customer') {
       where.customerId = req.customerId;
     } else if (customerId) {
       where.customerId = customerId;
@@ -188,6 +202,10 @@ async function getOrderDetail(req, res, next) {
       return error(res, '订单不存在', 404);
     }
 
+    if (req.userType === 'customer' && order.customerId !== req.customerId) {
+      return error(res, '无权访问此订单', 403);
+    }
+
     success(res, order);
   } catch (err) {
     next(err);
@@ -203,6 +221,10 @@ async function updateOrder(req, res, next) {
       return error(res, '订单不存在', 404);
     }
 
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权操作此订单', 403);
+    }
+
     const {
       title, quantity, deliveryDate, deliveryAddress,
       contact, contactPhone, urgency, storeId, remark,
@@ -210,12 +232,22 @@ async function updateOrder(req, res, next) {
       totalAmount, discount, actualAmount
     } = req.body;
 
-    await order.update({
+    const updateData = {
       title, quantity, deliveryDate, deliveryAddress,
-      contact, contactPhone, urgency, storeId, remark,
-      invoiceInfo, invoiceStatus, processList,
-      totalAmount, discount, actualAmount
-    });
+      contact, contactPhone, remark,
+      invoiceInfo, processList
+    };
+
+    if (req.userType === 'staff') {
+      updateData.urgency = urgency;
+      updateData.storeId = storeId;
+      updateData.invoiceStatus = invoiceStatus;
+      updateData.totalAmount = totalAmount;
+      updateData.discount = discount;
+      updateData.actualAmount = actualAmount;
+    }
+
+    await order.update(updateData);
 
     success(res, order, '订单更新成功');
   } catch (err) {
@@ -441,6 +473,15 @@ async function getOrderStatusLogs(req, res, next) {
   try {
     const { orderId } = req.params;
 
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权访问此订单', 403);
+    }
+
     const logs = await OrderStatusLog.findAll({
       where: { orderId },
       order: [['id', 'ASC']]
@@ -499,6 +540,15 @@ async function registerPayment(req, res, next) {
 async function getOrderPayments(req, res, next) {
   try {
     const { orderId } = req.params;
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权访问此订单', 403);
+    }
 
     const payments = await Payment.findAll({
       where: { orderId },

@@ -10,5 +10,6 @@ router.put('/:id/read', authMiddleware, notificationController.markAsRead);
 router.put('/read-all', authMiddleware, notificationController.markAllAsRead);
 router.delete('/:id', authMiddleware, notificationController.deleteNotification);
 router.post('/send', authMiddleware, staffAuth, notificationController.sendNotification);
+router.post('/trigger-delivery-reminders', authMiddleware, staffAuth, notificationController.triggerDeliveryReminders);
 
 module.exports = router;
