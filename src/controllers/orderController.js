@@ -221,7 +221,7 @@ async function getOrderDetail(req, res, next) {
       return error(res, '无权访问此订单', 403);
     }
 
-    if (!order.processes || order.processes.length === 0) {
+    if (!order.processes || order.processes.length < DEFAULT_PROCESSES.length) {
       await initOrderProcesses(order.id);
       const freshProcesses = await OrderProcess.findAll({
         where: { orderId: id },
@@ -630,10 +630,15 @@ const DEFAULT_PROCESSES = [
 
 async function initOrderProcesses(orderId) {
   const existing = await OrderProcess.findAll({ where: { orderId } });
-  if (existing.length > 0) return existing;
+  const existingKeys = existing.map(p => p.processKey);
+  
+  if (existing.length >= DEFAULT_PROCESSES.length) {
+    return existing.sort((a, b) => a.sort - b.sort);
+  }
 
-  const processes = await Promise.all(
-    DEFAULT_PROCESSES.map(p => OrderProcess.create({
+  const missing = DEFAULT_PROCESSES.filter(p => !existingKeys.includes(p.key));
+  const created = await Promise.all(
+    missing.map(p => OrderProcess.create({
       orderId,
       processKey: p.key,
       processName: p.name,
@@ -641,7 +646,9 @@ async function initOrderProcesses(orderId) {
       sort: p.sort
     }))
   );
-  return processes;
+
+  const all = [...existing, ...created];
+  return all.sort((a, b) => a.sort - b.sort);
 }
 
 async function getOrderProcesses(req, res, next) {
@@ -992,6 +999,246 @@ async function getOrderNotifications(req, res, next) {
   }
 }
 
+async function markOrderNotificationsAsRead(req, res, next) {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权操作此订单', 403);
+    }
+
+    const { Notification } = require('../models');
+    const recipientId = req.user?.id || req.customerId;
+    const recipientType = req.userType === 'staff' ? 'staff' : 'customer';
+
+    const updated = await Notification.update(
+      {
+        isRead: true,
+        readAt: new Date()
+      },
+      {
+        where: {
+          relatedType: 'order',
+          relatedId: orderId,
+          recipientId,
+          recipientType,
+          isRead: false
+        }
+      }
+    );
+
+    success(res, { markedCount: updated[0] }, `已标记 ${updated[0]} 条通知为已读`);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function validateShipItem(item, allOrders) {
+  const result = { ...item, valid: true, errors: [] };
+
+  if (!item.orderId && !item.orderNo) {
+    result.valid = false;
+    result.errors.push('请提供订单ID或订单号');
+    return result;
+  }
+
+  let order;
+  if (item.orderNo) {
+    order = allOrders.find(o => o.orderNo === item.orderNo);
+    if (order) result.orderId = order.id;
+  } else {
+    order = allOrders.find(o => o.id === parseInt(item.orderId));
+  }
+
+  if (!order) {
+    result.valid = false;
+    result.errors.push(`订单不存在`);
+    return result;
+  }
+
+  result.orderId = order.id;
+  result.orderNo = order.orderNo;
+  result.orderTitle = order.title;
+  result.currentStatus = order.status;
+
+  if (!['confirmed', 'in_production', 'producing', 'completed', 'shipped'].includes(order.status)) {
+    result.valid = false;
+    result.errors.push(`订单状态为${order.status}，不允许发货`);
+    return result;
+  }
+
+  const deliveryMethod = item.deliveryMethod || 'express';
+  if (deliveryMethod === 'express' && !item.trackingNo) {
+    result.valid = false;
+    result.errors.push('快递发货请填写物流单号');
+    return result;
+  }
+  if (deliveryMethod === 'pickup' && !item.pickupCode) {
+    result.valid = false;
+    result.errors.push('自提请填写自提码');
+    return result;
+  }
+
+  result.deliveryMethod = deliveryMethod;
+  return result;
+}
+
+async function previewBatchShip(req, res, next) {
+  try {
+    const { orders } = req.body;
+
+    if (!Array.isArray(orders) || orders.length === 0) {
+      return error(res, '请提供要导入的订单列表', 400);
+    }
+
+    if (orders.length > 100) {
+      return error(res, '单次批量处理不超过100个订单', 400);
+    }
+
+    const searchParams = [];
+    for (const item of orders) {
+      if (item.orderId) searchParams.push({ id: parseInt(item.orderId) });
+      if (item.orderNo) searchParams.push({ orderNo: item.orderNo });
+    }
+
+    const allOrders = await Order.findAll({
+      where: { [Op.or]: searchParams }
+    });
+
+    const results = [];
+    for (const item of orders) {
+      const validated = await validateShipItem(item, allOrders);
+      results.push(validated);
+    }
+
+    const valid = results.filter(r => r.valid);
+    const invalid = results.filter(r => !r.valid);
+
+    success(res, {
+      preview: results,
+      summary: {
+        total: results.length,
+        valid: valid.length,
+        invalid: invalid.length
+      },
+      canConfirm: valid.length > 0
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function confirmBatchShip(req, res, next) {
+  try {
+    const { orders } = req.body;
+
+    if (!Array.isArray(orders) || orders.length === 0) {
+      return error(res, '请提供要确认的订单列表', 400);
+    }
+
+    if (orders.length > 100) {
+      return error(res, '单次批量处理不超过100个订单', 400);
+    }
+
+    const searchParams = [];
+    for (const item of orders) {
+      if (item.orderId) searchParams.push({ id: parseInt(item.orderId) });
+      if (item.orderNo) searchParams.push({ orderNo: item.orderNo });
+    }
+
+    const allOrders = await Order.findAll({
+      where: { [Op.or]: searchParams }
+    });
+
+    const results = { success: [], failed: [] };
+    const { createNotification } = require('../utils/notification');
+
+    for (const item of orders) {
+      try {
+        const validated = await validateShipItem(item, allOrders);
+        if (!validated.valid) {
+          results.failed.push({
+            orderId: validated.orderId || item.orderId,
+            orderNo: validated.orderNo || item.orderNo,
+            reason: validated.errors.join('; ')
+          });
+          continue;
+        }
+
+        const order = await Order.findByPk(validated.orderId);
+        if (!order) {
+          results.failed.push({ orderId: validated.orderId, reason: '订单不存在' });
+          continue;
+        }
+
+        const oldStatus = order.status;
+        const deliveryMethod = validated.deliveryMethod;
+        const { trackingNo, logisticsCompany, pickupCode, pickupStoreId, remark } = validated;
+
+        const extraData = {};
+        if (logisticsCompany) extraData.logisticsCompany = logisticsCompany;
+        if (pickupStoreId) extraData.pickupStoreId = pickupStoreId;
+
+        await order.update({
+          deliveryMethod,
+          trackingNo,
+          pickupCode,
+          pickupStoreId,
+          status: 'shipped',
+          ...extraData
+        });
+
+        await OrderStatusLog.create({
+          orderId: validated.orderId,
+          fromStatus: oldStatus,
+          toStatus: 'shipped',
+          remark: deliveryMethod === 'pickup'
+            ? `已备货，等待自提${pickupCode ? `，自提码：${pickupCode}` : ''}${remark ? `（${remark}）` : ''}`
+            : `已发货${trackingNo ? `，物流单号：${trackingNo}` : ''}${logisticsCompany ? `（${logisticsCompany}）` : ''}${remark ? ` - ${remark}` : ''}`,
+          operatorId: req.user?.id,
+          operatorType: 'staff',
+          operatorName: req.user?.realName || '系统'
+        });
+
+        await createNotification({
+          recipientId: order.customerId,
+          recipientType: 'customer',
+          type: 'delivery',
+          title: deliveryMethod === 'pickup' ? '订单已到货，可前往自提' : '订单已发货',
+          content: deliveryMethod === 'pickup'
+            ? `您的订单「${order.title}」已备货完成，凭自提码「${pickupCode}」前往门店取货。`
+            : `您的订单「${order.title}」已发货，物流单号：${trackingNo}，请注意查收。`,
+          relatedType: 'order',
+          relatedId: order.id,
+          level: 'important',
+          senderName: '系统'
+        });
+
+        results.success.push({
+          orderId: validated.orderId,
+          orderNo: validated.orderNo,
+          status: 'shipped'
+        });
+      } catch (itemErr) {
+        results.failed.push({
+          orderId: item.orderId,
+          orderNo: item.orderNo,
+          reason: itemErr.message
+        });
+      }
+    }
+
+    success(res, results, `批量发货完成：成功${results.success.length}个，失败${results.failed.length}个`);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function batchShipOrders(req, res, next) {
   try {
     const { orders } = req.body;
@@ -1131,6 +1378,263 @@ async function requestBalancePayment(req, res, next) {
   }
 }
 
+async function registerRefund(req, res, next) {
+  try {
+    const { orderId } = req.params;
+    const { refundAmount, refundReason, remark, receiptImage } = req.body;
+
+    if (!refundAmount || refundAmount <= 0) {
+      return error(res, '请输入有效退款金额', 400);
+    }
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (req.userType === 'customer' && order.customerId !== req.customerId) {
+      return error(res, '无权操作此订单', 403);
+    }
+
+    if (['cancelled', 'refunded'].includes(order.status)) {
+      return error(res, '当前订单状态不允许退款', 400);
+    }
+
+    const totalPaid = parseFloat(order.paidAmount || 0);
+    if (parseFloat(refundAmount) > totalPaid) {
+      return error(res, `退款金额不能超过已付金额 ¥${totalPaid.toFixed(2)}`, 400);
+    }
+
+    const paymentNo = generatePaymentNo();
+
+    const payment = await Payment.create({
+      paymentNo,
+      orderId,
+      customerId: order.customerId,
+      amount: -parseFloat(refundAmount),
+      paymentMethod: 'other',
+      status: 'refunded',
+      confirmedBy: req.user?.id,
+      confirmedAt: new Date(),
+      refundAmount: parseFloat(refundAmount),
+      refundReason,
+      refundBy: req.user?.id,
+      refundAt: new Date(),
+      remark,
+      receiptImage
+    });
+
+    const newPaidAmount = totalPaid - parseFloat(refundAmount);
+    await order.update({
+      paidAmount: parseFloat(newPaidAmount.toFixed(2)),
+      status: newPaidAmount <= 0 ? 'refunded' : order.status
+    });
+
+    const customer = await Customer.findByPk(order.customerId);
+    if (customer) {
+      customer.decrement('balance', { by: refundAmount });
+    }
+
+    await OrderStatusLog.create({
+      orderId,
+      fromStatus: order.status,
+      toStatus: newPaidAmount <= 0 ? 'refunded' : order.status,
+      remark: `已登记退款 ¥${parseFloat(refundAmount).toFixed(2)}${refundReason ? `，原因：${refundReason}` : ''}`,
+      operatorId: req.user?.id,
+      operatorType: req.userType === 'staff' ? 'staff' : 'customer',
+      operatorName: req.user?.realName || '客户'
+    });
+
+    const { createNotification } = require('../utils/notification');
+    await createNotification({
+      recipientId: order.customerId,
+      recipientType: 'customer',
+      type: 'payment',
+      title: `退款通知: ${order.orderNo}`,
+      content: `您的订单「${order.title}」已登记退款 ¥${parseFloat(refundAmount).toFixed(2)}${refundReason ? `（原因：${refundReason}）` : ''}，请注意查收。`,
+      relatedType: 'order',
+      relatedId: order.id,
+      level: 'important',
+      senderName: req.user?.realName || '系统',
+      extraData: { refundAmount, refundReason, paymentNo, remainingAmount: newPaidAmount }
+    });
+
+    success(res, payment, '退款登记成功', 201);
+  } catch (err) {
+    next(err);
+  }
+}
+
+const PROCESS_ADVICE = {
+  proofing: {
+    pending: '请安排打样人员开始打样',
+    in_progress: '请关注打样进度，及时与客户确认',
+    exception: '请排查异常原因，必要时重新打样',
+    rework: '请根据返工原因调整后重新打样',
+    completed: '打样已完成，请推进到下一工序'
+  },
+  printing: {
+    pending: '请安排印刷人员准备印刷',
+    in_progress: '请关注印刷质量，确保色差在允许范围内',
+    exception: '请检查印刷设备或材料，排除异常',
+    rework: '请根据返工原因重新印刷',
+    completed: '印刷已完成，请推进到下一工序'
+  },
+  postpress: {
+    pending: '请安排后道工序处理（覆膜/模切/装订等）',
+    in_progress: '请关注后道工艺质量',
+    exception: '请排查后道设备或工艺问题',
+    rework: '请根据返工原因重新处理',
+    completed: '后道已完成，请推进到下一工序'
+  },
+  quality: {
+    pending: '请安排质检人员进行质量检查',
+    in_progress: '质检进行中，请耐心等待',
+    exception: '质检发现问题，请记录原因并安排返工',
+    rework: '请根据质检问题重新处理后再次质检',
+    completed: '质检已通过，请推进到下一工序'
+  },
+  packing: {
+    pending: '请安排打包人员进行包装',
+    in_progress: '打包进行中',
+    exception: '请检查包装材料或方式',
+    rework: '请根据返工原因重新打包',
+    completed: '打包已完成，订单可发货'
+  }
+};
+
+function calcStayHours(date) {
+  if (!date) return 0;
+  const diff = Date.now() - new Date(date).getTime();
+  return Math.floor(diff / (1000 * 60 * 60));
+}
+
+function getCurrentProcess(processes) {
+  if (!processes || processes.length === 0) return null;
+  
+  const sorted = [...processes].sort((a, b) => a.sort - b.sort);
+  
+  for (const p of sorted) {
+    if (p.status === 'exception' || p.status === 'rework') {
+      return p;
+    }
+  }
+  
+  for (const p of sorted) {
+    if (p.status === 'in_progress') {
+      return p;
+    }
+  }
+  
+  for (const p of sorted) {
+    if (p.status === 'pending') {
+      return p;
+    }
+  }
+  
+  return sorted[sorted.length - 1];
+}
+
+async function getProductionBoard(req, res, next) {
+  try {
+    const { status = 'in_production' } = req.query;
+
+    const where = {};
+    where.status = {
+      [Op.in]: ['in_production', 'proofing', 'producing', 'completed']
+    };
+
+    if (status && status !== 'all') {
+      where.status = { [Op.in]: status.split(',') };
+    }
+
+    const orders = await Order.findAll({
+      where,
+      include: [
+        {
+          model: Customer,
+          as: 'customer',
+          attributes: ['id', 'name', 'contact', 'phone']
+        },
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'realName', 'username', 'phone']
+        },
+        {
+          model: OrderProcess,
+          as: 'processes',
+          order: [['sort', 'ASC']]
+        }
+      ],
+      order: [['urgency', 'DESC'], ['id', 'DESC']]
+    });
+
+    const grouped = {
+      proofing: [],
+      printing: [],
+      postpress: [],
+      quality: [],
+      packing: [],
+      completed: []
+    };
+
+    for (const order of orders) {
+      const processes = order.processes || [];
+      const currentProc = getCurrentProcess(processes);
+      
+      if (!currentProc) continue;
+
+      const stayHours = calcStayHours(currentProc.updatedAt || currentProc.startedAt || order.productionStartedAt);
+      const advice = PROCESS_ADVICE[currentProc.processKey]?.[currentProc.status] || '请跟进处理';
+
+      const orderData = order.toJSON();
+      orderData.currentProcess = {
+        key: currentProc.processKey,
+        name: currentProc.processName,
+        status: currentProc.status,
+        startedAt: currentProc.startedAt,
+        updatedAt: currentProc.updatedAt,
+        completedAt: currentProc.completedAt,
+        exceptionReason: currentProc.exceptionReason,
+        reworkCount: currentProc.reworkCount,
+        reworkReason: currentProc.reworkReason,
+        remark: currentProc.remark,
+        operatorName: currentProc.operatorName,
+        stayHours,
+        nextAdvice: advice
+      };
+      delete orderData.processes;
+
+      let groupKey = currentProc.processKey;
+      if (currentProc.status === 'completed' && groupKey === 'packing') {
+        groupKey = 'completed';
+      }
+
+      grouped[groupKey].push(orderData);
+    }
+
+    const summary = {};
+    for (const key of Object.keys(grouped)) {
+      const processMeta = DEFAULT_PROCESSES.find(p => p.key === key);
+      summary[key] = {
+        name: key === 'completed' ? '已完成待发货' : processMeta?.name || key,
+        count: grouped[key].length,
+        exceptionCount: grouped[key].filter(o => o.currentProcess.status === 'exception').length,
+        reworkCount: grouped[key].filter(o => o.currentProcess.status === 'rework').length
+      };
+    }
+
+    success(res, {
+      groups: grouped,
+      summary,
+      totalOrders: orders.length
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   createOrder,
   getOrderList,
@@ -1153,6 +1657,11 @@ module.exports = {
   shipOrder,
   confirmDelivery,
   getOrderNotifications,
+  markOrderNotificationsAsRead,
   batchShipOrders,
-  requestBalancePayment
+  previewBatchShip,
+  confirmBatchShip,
+  requestBalancePayment,
+  registerRefund,
+  getProductionBoard
 };

@@ -51,6 +51,23 @@ const Payment = sequelize.define('Payment', {
   receiptImage: {
     type: DataTypes.STRING(500),
     field: 'receipt_image'
+  },
+  refundAmount: {
+    type: DataTypes.DECIMAL(12, 2),
+    defaultValue: 0,
+    field: 'refund_amount'
+  },
+  refundReason: {
+    type: DataTypes.STRING(500),
+    field: 'refund_reason'
+  },
+  refundBy: {
+    type: DataTypes.INTEGER,
+    field: 'refund_by'
+  },
+  refundAt: {
+    type: DataTypes.DATE,
+    field: 'refund_at'
   }
 }, {
   tableName: 'payments'

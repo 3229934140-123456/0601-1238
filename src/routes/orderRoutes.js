@@ -3,8 +3,11 @@ const router = express.Router();
 const orderController = require('../controllers/orderController');
 const { authMiddleware, staffAuth } = require('../middleware/auth');
 
+router.get('/production-board', authMiddleware, staffAuth, orderController.getProductionBoard);
 router.get('/', authMiddleware, orderController.getOrderList);
 router.post('/batch-ship', authMiddleware, staffAuth, orderController.batchShipOrders);
+router.post('/batch-ship/preview', authMiddleware, staffAuth, orderController.previewBatchShip);
+router.post('/batch-ship/confirm', authMiddleware, staffAuth, orderController.confirmBatchShip);
 router.get('/:id', authMiddleware, orderController.getOrderDetail);
 router.post('/', authMiddleware, orderController.createOrder);
 router.put('/:id', authMiddleware, staffAuth, orderController.updateOrder);
@@ -21,6 +24,7 @@ router.get('/:orderId/status-logs', authMiddleware, orderController.getOrderStat
 
 router.get('/:orderId/payments', authMiddleware, orderController.getOrderPayments);
 router.post('/:orderId/payments', authMiddleware, staffAuth, orderController.registerPayment);
+router.post('/:orderId/refunds', authMiddleware, staffAuth, orderController.registerRefund);
 router.post('/:orderId/request-payment', authMiddleware, staffAuth, orderController.requestBalancePayment);
 
 router.put('/:id/invoice', authMiddleware, staffAuth, orderController.updateInvoiceInfo);
@@ -32,5 +36,6 @@ router.put('/:id/ship', authMiddleware, staffAuth, orderController.shipOrder);
 router.put('/:id/confirm-delivery', authMiddleware, orderController.confirmDelivery);
 
 router.get('/:orderId/notifications', authMiddleware, orderController.getOrderNotifications);
+router.put('/:orderId/notifications/mark-read', authMiddleware, orderController.markOrderNotificationsAsRead);
 
 module.exports = router;
