@@ -22,7 +22,7 @@ const OrderProcess = sequelize.define('OrderProcess', {
     field: 'process_name'
   },
   status: {
-    type: DataTypes.ENUM('pending', 'in_progress', 'completed', 'skipped'),
+    type: DataTypes.ENUM('pending', 'in_progress', 'completed', 'skipped', 'exception', 'rework'),
     defaultValue: 'pending'
   },
   startedAt: {
@@ -43,6 +43,19 @@ const OrderProcess = sequelize.define('OrderProcess', {
   },
   remark: {
     type: DataTypes.STRING(500)
+  },
+  exceptionReason: {
+    type: DataTypes.STRING(500),
+    field: 'exception_reason'
+  },
+  reworkCount: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0,
+    field: 'rework_count'
+  },
+  reworkReason: {
+    type: DataTypes.STRING(500),
+    field: 'rework_reason'
   },
   sort: {
     type: DataTypes.INTEGER,

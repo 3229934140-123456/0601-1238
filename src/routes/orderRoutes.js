@@ -4,6 +4,7 @@ const orderController = require('../controllers/orderController');
 const { authMiddleware, staffAuth } = require('../middleware/auth');
 
 router.get('/', authMiddleware, orderController.getOrderList);
+router.post('/batch-ship', authMiddleware, staffAuth, orderController.batchShipOrders);
 router.get('/:id', authMiddleware, orderController.getOrderDetail);
 router.post('/', authMiddleware, orderController.createOrder);
 router.put('/:id', authMiddleware, staffAuth, orderController.updateOrder);
@@ -20,6 +21,7 @@ router.get('/:orderId/status-logs', authMiddleware, orderController.getOrderStat
 
 router.get('/:orderId/payments', authMiddleware, orderController.getOrderPayments);
 router.post('/:orderId/payments', authMiddleware, staffAuth, orderController.registerPayment);
+router.post('/:orderId/request-payment', authMiddleware, staffAuth, orderController.requestBalancePayment);
 
 router.put('/:id/invoice', authMiddleware, staffAuth, orderController.updateInvoiceInfo);
 
