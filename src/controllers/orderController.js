@@ -1,6 +1,6 @@
 const { Op } = require('sequelize');
 const {
-  Order, OrderStatusLog, Customer, Artwork, Quote,
+  Order, OrderStatusLog, OrderProcess, Customer, Artwork, Quote,
   PaperSpec, Store, User, Payment
 } = require('../models');
 const { success, error, paginate } = require('../utils/response');
@@ -189,6 +189,11 @@ async function getOrderDetail(req, res, next) {
           model: OrderStatusLog,
           as: 'statusLogs',
           order: [['id', 'ASC']]
+        },
+        {
+          model: OrderProcess,
+          as: 'processes',
+          order: [['sort', 'ASC']]
         },
         {
           model: Payment,
@@ -582,6 +587,312 @@ async function updateInvoiceInfo(req, res, next) {
   }
 }
 
+const DEFAULT_PROCESSES = [
+  { key: 'proofing', name: '打样', sort: 1 },
+  { key: 'printing', name: '印刷', sort: 2 },
+  { key: 'postpress', name: '后道', sort: 3 },
+  { key: 'quality', name: '质检', sort: 4 },
+  { key: 'packing', name: '打包', sort: 5 }
+];
+
+async function initOrderProcesses(orderId) {
+  const existing = await OrderProcess.findAll({ where: { orderId } });
+  if (existing.length > 0) return existing;
+
+  const processes = await Promise.all(
+    DEFAULT_PROCESSES.map(p => OrderProcess.create({
+      orderId,
+      processKey: p.key,
+      processName: p.name,
+      status: 'pending',
+      sort: p.sort
+    }))
+  );
+  return processes;
+}
+
+async function getOrderProcesses(req, res, next) {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权访问此订单', 403);
+    }
+
+    let processes = await OrderProcess.findAll({
+      where: { orderId },
+      order: [['sort', 'ASC'], ['id', 'ASC']]
+    });
+
+    if (processes.length === 0) {
+      processes = await initOrderProcesses(orderId);
+    }
+
+    success(res, processes);
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function updateProcessStatus(req, res, next) {
+  try {
+    const { orderId, processKey } = req.params;
+    const { status, remark } = req.body;
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!['pending', 'in_progress', 'completed', 'skipped'].includes(status)) {
+      return error(res, '无效的工序状态', 400);
+    }
+
+    let process = await OrderProcess.findOne({
+      where: { orderId, processKey }
+    });
+
+    if (!process) {
+      const meta = DEFAULT_PROCESSES.find(p => p.key === processKey);
+      if (!meta) {
+        return error(res, '未知工序类型', 400);
+      }
+      process = await OrderProcess.create({
+        orderId,
+        processKey,
+        processName: meta.name,
+        status,
+        sort: meta.sort
+      });
+    }
+
+    const updateData = { status, remark };
+    if (status === 'in_progress' && !process.startedAt) {
+      updateData.startedAt = new Date();
+    }
+    if (status === 'completed' && !process.completedAt) {
+      updateData.completedAt = new Date();
+    }
+    updateData.operatorId = req.user?.id;
+    updateData.operatorName = req.user?.realName || '系统';
+
+    await process.update(updateData);
+
+    await OrderStatusLog.create({
+      orderId,
+      fromStatus: order.status,
+      toStatus: order.status,
+      remark: `${process.processName} 工序${status === 'completed' ? '完成' : status === 'in_progress' ? '开始' : status === 'skipped' ? '跳过' : '更新'}${remark ? `：${remark}` : ''}`,
+      operatorId: req.user?.id,
+      operatorType: 'staff',
+      operatorName: req.user?.realName || '系统'
+    });
+
+    success(res, process, '工序进度已更新');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function shipOrder(req, res, next) {
+  try {
+    const { id } = req.params;
+    const {
+      deliveryMethod = 'express',
+      trackingNo,
+      logisticsCompany,
+      pickupStoreId,
+      pickupCode,
+      remark
+    } = req.body;
+
+    const order = await Order.findByPk(id);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!['confirmed', 'in_production', 'producing', 'completed', 'shipped'].includes(order.status)) {
+      return error(res, '当前状态不允许发货', 400);
+    }
+
+    if (deliveryMethod === 'express' && !trackingNo) {
+      return error(res, '快递发货请填写物流单号', 400);
+    }
+    if (deliveryMethod === 'pickup' && !pickupCode) {
+      return error(res, '自提请填写自提码', 400);
+    }
+
+    const oldStatus = order.status;
+
+    const extraData = {};
+    if (logisticsCompany) extraData.logisticsCompany = logisticsCompany;
+    if (pickupStoreId) extraData.pickupStoreId = pickupStoreId;
+
+    await order.update({
+      deliveryMethod,
+      trackingNo,
+      pickupCode,
+      pickupStoreId,
+      status: 'shipped',
+      ...extraData
+    });
+
+    await OrderStatusLog.create({
+      orderId: id,
+      fromStatus: oldStatus,
+      toStatus: 'shipped',
+      remark: deliveryMethod === 'pickup'
+        ? `已备货，等待自提${pickupCode ? `，自提码：${pickupCode}` : ''}${remark ? `（${remark}）` : ''}`
+        : `已发货${trackingNo ? `，物流单号：${trackingNo}` : ''}${logisticsCompany ? `（${logisticsCompany}）` : ''}${remark ? ` - ${remark}` : ''}`,
+      operatorId: req.user?.id,
+      operatorType: 'staff',
+      operatorName: req.user?.realName || '系统'
+    });
+
+    const { createNotification } = require('../utils/notification');
+    await createNotification({
+      recipientId: order.customerId,
+      recipientType: 'customer',
+      type: 'delivery',
+      title: deliveryMethod === 'pickup' ? '订单已到货，可前往自提' : '订单已发货',
+      content: deliveryMethod === 'pickup'
+        ? `您的订单「${order.title}」已备货完成，凭自提码「${pickupCode}」前往门店取货。`
+        : `您的订单「${order.title}」已发货，物流单号：${trackingNo}，请注意查收。`,
+      relatedType: 'order',
+      relatedId: order.id,
+      level: 'important',
+      senderName: '系统',
+      extraData: {
+        deliveryMethod,
+        trackingNo,
+        pickupCode,
+        logisticsCompany
+      }
+    });
+
+    success(res, order, deliveryMethod === 'pickup' ? '已完成备货，可通知客户自提' : '发货成功');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function confirmDelivery(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { remark } = req.body;
+
+    const order = await Order.findByPk(id);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (req.userType === 'customer' && order.customerId !== req.customerId) {
+      return error(res, '无权操作此订单', 403);
+    }
+
+    if (!['shipped', 'completed'].includes(order.status)) {
+      return error(res, '当前状态不允许确认交付', 400);
+    }
+
+    const oldStatus = order.status;
+
+    await order.update({
+      status: 'delivered',
+      deliveredAt: new Date()
+    });
+
+    await OrderStatusLog.create({
+      orderId: id,
+      fromStatus: oldStatus,
+      toStatus: 'delivered',
+      remark: remark || (req.userType === 'customer' ? '客户确认已收货' : '已完成交付'),
+      operatorId: req.user?.id || req.customerId,
+      operatorType: req.userType === 'staff' ? 'staff' : 'customer',
+      operatorName: req.user?.realName || '客户'
+    });
+
+    success(res, order, '订单已完成交付');
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getOrderNotifications(req, res, next) {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findByPk(orderId);
+    if (!order) {
+      return error(res, '订单不存在', 404);
+    }
+
+    if (!checkOrderOwnership(req, order)) {
+      return error(res, '无权访问此订单', 403);
+    }
+
+    const { Notification, ArtworkComment } = require('../models');
+
+    const notifications = await Notification.findAll({
+      where: {
+        relatedType: 'order',
+        relatedId: orderId,
+        recipientId: req.user?.id || req.customerId,
+        recipientType: req.userType === 'staff' ? 'staff' : 'customer'
+      },
+      order: [['id', 'DESC']]
+    });
+
+    const artworkComments = [];
+    if (order.artworkId) {
+      const comments = await ArtworkComment.findAll({
+        where: { artworkId: order.artworkId },
+        order: [['id', 'DESC']],
+        limit: 20
+      });
+      comments.forEach(c => {
+        notifications.push({
+          id: `comment-${c.id}`,
+          type: 'artwork',
+          title: '稿件评论',
+          content: c.content,
+          relatedType: 'artwork',
+          relatedId: order.artworkId,
+          isRead: false,
+          level: 'normal',
+          senderName: c.commenterName,
+          createdAt: c.createdAt,
+          isComment: true,
+          commentType: c.commentType
+        });
+      });
+    }
+
+    notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const grouped = {
+      all: notifications,
+      byType: {
+        order: notifications.filter(n => n.type === 'order' && !n.isComment),
+        artwork: notifications.filter(n => n.type === 'artwork'),
+        payment: notifications.filter(n => n.type === 'payment'),
+        delivery: notifications.filter(n => n.type === 'delivery'),
+        review: notifications.filter(n => n.type === 'review'),
+        system: notifications.filter(n => n.type === 'system')
+      },
+      unreadCount: notifications.filter(n => !n.isRead && !n.isComment).length
+    };
+
+    success(res, grouped);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   createOrder,
   getOrderList,
@@ -597,5 +908,11 @@ module.exports = {
   registerPayment,
   getOrderPayments,
   updateInvoiceInfo,
-  updateOrderStatus
+  updateOrderStatus,
+  initOrderProcesses,
+  getOrderProcesses,
+  updateProcessStatus,
+  shipOrder,
+  confirmDelivery,
+  getOrderNotifications
 };

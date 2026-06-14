@@ -310,6 +310,10 @@ async function rejectProof(req, res, next) {
       return error(res, '无权操作此订单', 403);
     }
 
+    if (order.proofStatus !== 'pending_approval') {
+      return error(res, '当前打样状态不允许拒绝', 400);
+    }
+
     await order.update({
       proofStatus: 'rejected'
     });
@@ -318,13 +322,30 @@ async function rejectProof(req, res, next) {
       orderId,
       fromStatus: 'proofing',
       toStatus: 'proofing',
-      remark: `打样被拒绝：${reason || '原因未填写'}`,
+      remark: `打样被拒绝${reason ? `，原因：${reason}` : '（原因未填写）'}`,
       operatorId: req.customerId || req.user?.id,
       operatorType: req.userType === 'staff' ? 'staff' : 'customer',
       operatorName: req.user?.realName || '客户'
     });
 
-    success(res, order, '打样已拒绝');
+    const { createNotification } = require('../utils/notification');
+    await createNotification({
+      recipientId: order.assignedTo || order.confirmedBy || 1,
+      recipientType: 'staff',
+      type: 'review',
+      title: '打样被客户拒绝',
+      content: `订单「${order.title}」的打样被客户拒绝${reason ? `，原因：${reason}` : ''}`,
+      relatedType: 'order',
+      relatedId: order.id,
+      level: 'important',
+      senderName: req.user?.realName || '客户'
+    });
+
+    success(res, {
+      ...order.toJSON(),
+      proofRejected: true,
+      rejectReason: reason || ''
+    }, '打样已拒绝');
   } catch (err) {
     next(err);
   }

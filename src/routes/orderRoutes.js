@@ -23,4 +23,12 @@ router.post('/:orderId/payments', authMiddleware, staffAuth, orderController.reg
 
 router.put('/:id/invoice', authMiddleware, staffAuth, orderController.updateInvoiceInfo);
 
+router.get('/:orderId/processes', authMiddleware, orderController.getOrderProcesses);
+router.put('/:orderId/processes/:processKey', authMiddleware, staffAuth, orderController.updateProcessStatus);
+
+router.put('/:id/ship', authMiddleware, staffAuth, orderController.shipOrder);
+router.put('/:id/confirm-delivery', authMiddleware, orderController.confirmDelivery);
+
+router.get('/:orderId/notifications', authMiddleware, orderController.getOrderNotifications);
+
 module.exports = router;

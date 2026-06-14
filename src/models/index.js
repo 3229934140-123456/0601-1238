@@ -9,6 +9,7 @@ const ProcessSpec = require('./ProcessSpec');
 const Quote = require('./Quote');
 const Order = require('./Order');
 const OrderStatusLog = require('./OrderStatusLog');
+const OrderProcess = require('./OrderProcess');
 const Payment = require('./Payment');
 const Notification = require('./Notification');
 const Store = require('./Store');
@@ -27,6 +28,7 @@ const db = {
   Quote,
   Order,
   OrderStatusLog,
+  OrderProcess,
   Payment,
   Notification,
   Store,
@@ -66,10 +68,12 @@ Order.belongsTo(Store, { as: 'store', foreignKey: 'store_id' });
 Order.belongsTo(User, { as: 'assignee', foreignKey: 'assigned_to' });
 Order.belongsTo(User, { as: 'confirmer', foreignKey: 'confirmed_by' });
 Order.hasMany(OrderStatusLog, { as: 'statusLogs', foreignKey: 'order_id' });
+Order.hasMany(OrderProcess, { as: 'processes', foreignKey: 'order_id' });
 Order.hasMany(Payment, { as: 'payments', foreignKey: 'order_id' });
 Order.hasOne(Review, { as: 'review', foreignKey: 'order_id' });
 
 OrderStatusLog.belongsTo(Order, { as: 'order', foreignKey: 'order_id' });
+OrderProcess.belongsTo(Order, { as: 'order', foreignKey: 'order_id' });
 
 Payment.belongsTo(Order, { as: 'order', foreignKey: 'order_id' });
 Payment.belongsTo(Customer, { as: 'customer', foreignKey: 'customer_id' });

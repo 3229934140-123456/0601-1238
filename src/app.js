@@ -54,7 +54,7 @@ ensureUploadDir();
 
 const PORT = config.port;
 
-db.sequelize.sync({ alter: false }).then(() => {
+db.sequelize.sync().then(() => {
   console.log('数据库连接成功');
   app.listen(PORT, () => {
     console.log(`服务器运行在 http://localhost:${PORT}`);

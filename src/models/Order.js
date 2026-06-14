@@ -73,7 +73,7 @@ const Order = sequelize.define('Order', {
     field: 'paid_amount'
   },
   status: {
-    type: DataTypes.ENUM('pending', 'confirmed', 'in_production', 'proofing', 'proof_approved', 'producing', 'completed', 'delivered', 'cancelled', 'refunded'),
+    type: DataTypes.ENUM('pending', 'confirmed', 'in_production', 'proofing', 'proof_approved', 'producing', 'completed', 'shipped', 'delivered', 'cancelled', 'refunded'),
     defaultValue: 'pending'
   },
   proofStatus: {
@@ -135,6 +135,18 @@ const Order = sequelize.define('Order', {
   trackingNo: {
     type: DataTypes.STRING(100),
     field: 'tracking_no'
+  },
+  logisticsCompany: {
+    type: DataTypes.STRING(100),
+    field: 'logistics_company'
+  },
+  pickupCode: {
+    type: DataTypes.STRING(50),
+    field: 'pickup_code'
+  },
+  pickupStoreId: {
+    type: DataTypes.INTEGER,
+    field: 'pickup_store_id'
   },
   remark: {
     type: DataTypes.TEXT
